@@ -449,6 +449,110 @@ def run(**kwargs):
 
     return ret
 
+def run_and_test(compare_operator, expected, name=None, returner=None, **kwargs):
+    """
+    Run a single module function and inspect the return value using a comparison method.
+
+    :param returner:
+        Specify a common returner for the whole batch to send the return data
+
+    :param kwargs:
+        Pass any arguments needed to execute the function(s)
+
+    :param test:
+        A list of test conditions and their resulting code if succesfully matched.
+        If no match is found, it will return
+
+    .. code-block:: yaml
+
+      some_id_of_state:
+        module.run:
+          - service.get_info:
+            - name: salt-minion
+          - tests:
+            - unchanged:
+                compare_operator: data.subdict_match
+                expected: 'ServiceAccount:SaltyAdmin'
+            - changed:
+                compare_operator: data.subdict_match
+                expected: 'ServiceAccount:SaltyAdmin'
+            - error:
+                compare_operator: data.subdict_match
+                expected: 'ServiceAccount:SaltyAdmin'
+
+    :return:
+    """
+
+    ret = {
+        "name": list(kwargs),
+        "changes": {},
+        "comment": "",
+        "result": None,
+    }
+
+    functions = [func for func in kwargs if "." in func]
+    missing = []
+    tests = []
+    for func in functions:
+        func = func.split(":")[0]
+        if func not in __salt__:
+            missing.append(func)
+        elif __opts__["test"]:
+            tests.append(func)
+
+    if tests or missing:
+        ret["comment"] = " ".join(
+            [
+                missing
+                and "Unavailable function{plr}: "
+                "{func}.".format(
+                    plr=(len(missing) > 1 or ""), func=(", ".join(missing) or "")
+                )
+                or "",
+                tests
+                and "Function{plr} {func} to be "
+                "executed.".format(
+                    plr=(len(tests) > 1 or ""), func=(", ".join(tests)) or ""
+                )
+                or "",
+            ]
+        ).strip()
+        ret["result"] = not (missing or not tests)
+
+    if ret["result"] is None:
+        ret["result"] = True
+
+        failures = []
+        success = []
+        for func in functions:
+            _func = func.split(":")[0]
+            try:
+                func_ret = _call_function(
+                    _func, returner=returner, func_args=kwargs.get(func)
+                )
+                if not _get_result(func_ret, ret["changes"].get("ret", {})):
+                    if isinstance(func_ret, dict):
+                        failures.append(
+                            "'{0}' failed: {1}".format(
+                                func, func_ret.get("comment", "(error message N/A)")
+                            )
+                        )
+                else:
+                    success.append(
+                        "{0}: {1}".format(
+                            func,
+                            func_ret.get("comment", "Success")
+                            if isinstance(func_ret, dict)
+                            else func_ret,
+                        )
+                    )
+                    ret["changes"][func] = func_ret
+            except (SaltInvocationError, TypeError) as ex:
+                failures.append("'{0}' failed: {1}".format(func, ex))
+        ret["comment"] = ", ".join(failures + success)
+        ret["result"] = not bool(failures)
+
+    return ret
 
 def _call_function(name, returner=None, func_args=None, func_kwargs=None):
     """
